@@ -299,6 +299,10 @@ def argv_violations(policy: dict, kind: str, argv: list[str]) -> list[str]:
     index = 0
     while index < len(argv):
         arg = argv[index]
+        if arg == "--":
+            # The agent CLI's own end of options: what follows is prompt
+            # text (codex accepts -- before a prompt), never a setting.
+            break
         following = argv[index + 1] if index + 1 < len(argv) else ""
         if arg in ("-m", "--model"):
             models.append(following.strip("\"'"))

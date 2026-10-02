@@ -25,7 +25,8 @@ bin/model-route check-argv codex -- -m gpt-6-astra -c 'service_tier="priority"'
 problem when it names a forbidden model, a forbidden service tier, or (under
 `forbid.fast`) a fast model or any non-default tier. It reads every spelling:
 `-m X`, `-mX`, `--model X`, `--model=X`, and the same for `-c`/`--config`
-settings of `model` and `service_tier`. `bin/herdr` runs it on the argv after
+settings of `model` and `service_tier`, up to the agent CLI's own `--`
+(after it, words are prompt text). `bin/herdr` runs it on the argv after
 `--` for every `agent start`, whatever the option order, and blocks the start
 on exit 2.
 

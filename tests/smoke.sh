@@ -1319,6 +1319,20 @@ HERDR_REAL="$policy_dir/herdr" HERDR_HELPER_OK=1 HERDR_PLUGIN_CONFIG_DIR="$polic
     >/dev/null 2>"$err" || fail "the model policy blocked an allowed options-first start"
 grep -qF 'agent start --kind codex review-seat -- --model=gpt-6.1-sol' "$policy_dir/calls.log" ||
     fail "an allowed options-first start did not reach the real herdr unchanged"
+# After the agent CLI's own --, a word is prompt text. The gate must let it
+# through, and still block a forbidden model given before that --.
+rm -f "$policy_dir/calls.log"
+HERDR_REAL="$policy_dir/herdr" HERDR_HELPER_OK=1 HERDR_PLUGIN_CONFIG_DIR="$policy_dir" \
+    sh "$root/bin/herdr" agent start review-seat --kind codex -- -- -mgpt-6-astra \
+    >/dev/null 2>"$err" || fail "the model policy blocked prompt text after the agent end-of-options"
+grep -qF -- '-mgpt-6-astra' "$policy_dir/calls.log" ||
+    fail "prompt text after the agent end-of-options did not reach the real herdr"
+rm -f "$policy_dir/calls.log"
+if HERDR_REAL="$policy_dir/herdr" HERDR_HELPER_OK=1 HERDR_PLUGIN_CONFIG_DIR="$policy_dir" \
+    sh "$root/bin/herdr" agent start review-seat --kind codex -- -m gpt-6-astra -- review 2>"$err"; then
+    fail "a forbidden model before the agent end-of-options skipped the gate"
+fi
+[ ! -f "$policy_dir/calls.log" ] || fail "a forbidden model before the inner -- reached the real herdr"
 # Review finding 3: onboard --config-dir reads that directory's policy even
 # when HERDR_PLUGIN_CONFIG_DIR is unset or points elsewhere.
 mkdir -p "$policy_dir/cfg" "$policy_dir/other"

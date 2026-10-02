@@ -536,6 +536,20 @@ class Policy(unittest.TestCase):
                          ["-m", "gpt-6.1-sol", "-c", 'service_tier="default"']):
                 self.assertEqual(policy.argv_violations(merged, "codex", argv), [], argv)
 
+    def test_check_argv_stops_at_the_agent_end_of_options(self):
+        # Confirmation review: after the agent CLI's own --, words are prompt
+        # text, not options. Everything before that -- is still checked.
+        with self.override(STRICT_OVERRIDE):
+            merged = policy.load()
+            for argv in (["--", "-mgpt-6-astra"], ["--", "-m", "gpt-6-astra"],
+                         ["-m", "gpt-6.1-sol", "--", "-cservice_tier=priority"]):
+                self.assertEqual(policy.argv_violations(merged, "codex", argv), [], argv)
+                self.assertEqual(policy.main(["check-argv", "codex", "--", *argv]), 0, argv)
+            for argv in (["-m", "gpt-6-astra", "--", "prompt"], ["-mgpt-6-astra", "--"],
+                         ["-cservice_tier=priority", "--", "-m", "gpt-6.1-sol"]):
+                self.assertTrue(policy.argv_violations(merged, "codex", argv), argv)
+                self.assertEqual(policy.main(["check-argv", "codex", "--", *argv]), 2, argv)
+
     def test_nested_route_fields_are_validated(self):
         # Review finding 4: a wrongly typed nested route field loaded fine.
         broken_routes = (
