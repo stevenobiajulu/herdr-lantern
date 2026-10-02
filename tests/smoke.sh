@@ -320,8 +320,13 @@ if awk '/id="agent-onboard"/,/<\/code>/' "$root/docs/index.html" |
 fi
 grep -qF 'switch to the new Lantern tab' "$root/docs/index.html" ||
     fail "the paste block does not hand first-run to the lantern chat"
-grep -qF 'Grok Build → `--kind grok`' "$root/launch.sh" ||
-    fail "launch.sh does not map Grok Build to --kind grok with no model"
+# The onboarding mapping now renders from model-policy.json.
+grep -qF '$model_policy_section' "$root/launch.sh" ||
+    fail "launch.sh does not inject the rendered model policy"
+policy_prompt=$(HERDR_PLUGIN_CONFIG_DIR= "$root/bin/model-route" policy-prompt) ||
+    fail "model-route policy-prompt failed on the shipped policy"
+printf '%s\n' "$policy_prompt" | grep -qF 'Grok Build → `--kind grok` with no `--model`' ||
+    fail "the model policy does not map Grok Build to --kind grok with no model"
 grep -qF 'Grok Build → `--kind grok`' "$root/prompt.md" ||
     fail "prompt.md does not map Grok Build to --kind grok with no model"
 grep -qF 'HELPER_SPAWN_MODEL' "$root/helper.conf.example" ||
@@ -1267,6 +1272,40 @@ if detected=$(helper_detect_agent); then
 else
     printf 'note: no helper CLI on PATH here\n'
 fi
+
+# The model policy gates agent start in the wrapper. A user override that
+# forbids a model or a priority tier blocks before the real herdr runs;
+# the shipped policy forbids nothing and lets the same start through.
+policy_dir=$(mktemp -d)
+cat >"$policy_dir/herdr" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"$(dirname "$0")/calls.log"
+exit 0
+EOF
+chmod +x "$policy_dir/herdr"
+printf '%s\n' '{"schema": 1, "forbid": {"service_tiers": ["priority"], "models": [["astra"]], "reason": "smoke"}}' \
+    >"$policy_dir/model-policy.json"
+if HERDR_REAL="$policy_dir/herdr" HERDR_HELPER_OK=1 HERDR_PLUGIN_CONFIG_DIR="$policy_dir" \
+    sh "$root/bin/herdr" agent start seat --kind codex -- -m gpt-6-astra 2>"$err"; then
+    fail "the model policy did not block a forbidden model at agent start"
+fi
+grep -qF 'forbidden by the user model policy' "$err" ||
+    fail "the agent start block did not name the model policy"
+if HERDR_REAL="$policy_dir/herdr" HERDR_HELPER_OK=1 HERDR_PLUGIN_CONFIG_DIR="$policy_dir" \
+    sh "$root/bin/herdr" agent start seat --kind codex -- -m gpt-6.1-sol -c 'service_tier="priority"' 2>"$err"; then
+    fail "the model policy did not block a forbidden service tier at agent start"
+fi
+[ ! -f "$policy_dir/calls.log" ] || fail "a policy-blocked start still reached the real herdr"
+HERDR_REAL="$policy_dir/herdr" HERDR_HELPER_OK=1 HERDR_PLUGIN_CONFIG_DIR="$policy_dir" \
+    sh "$root/bin/herdr" agent start seat --kind codex -- -m gpt-6.1-sol -c 'service_tier="default"' \
+    >/dev/null 2>"$err" || fail "the model policy blocked an allowed agent start"
+grep -qF 'gpt-6.1-sol' "$policy_dir/calls.log" || fail "an allowed start did not reach the real herdr"
+rm -f "$policy_dir/calls.log" "$policy_dir/model-policy.json"
+HERDR_REAL="$policy_dir/herdr" HERDR_HELPER_OK=1 HERDR_PLUGIN_CONFIG_DIR="$policy_dir" \
+    sh "$root/bin/herdr" agent start seat --kind codex -- -m gpt-6-astra >/dev/null 2>"$err" ||
+    fail "the shipped policy blocked a start it does not forbid"
+rm -rf "$policy_dir"
+policy_dir=
 
 export HERDR_REAL=/bin/echo
 export HERDR_HELPER_OK=

@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import tempfile
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -13,6 +14,8 @@ from unittest.mock import patch
 
 BIN = Path(__file__).resolve().parents[1] / "bin"
 sys.path.insert(0, str(BIN))
+# A developer override must not change what these tests see.
+os.environ.pop("HERDR_PLUGIN_CONFIG_DIR", None)
 
 
 def load(name, filename):
@@ -24,6 +27,7 @@ def load(name, filename):
 
 
 route = load("model_route", "model-route.py")
+policy = load("model_policy", "model_policy.py")
 preflight = load("model_preflight", "model-preflight.py")
 
 
@@ -357,6 +361,198 @@ claude-opus-5-5-high-fast - Claude Opus 5.5 1M High Fast
                         self.check("claude", "claude-fable-5-1", "high")
                 else:
                     self.assertEqual(self.check("claude", "claude-fable-5-1", "high")[0], 0)
+
+
+STRICT_OVERRIDE = {
+    "schema": 1,
+    "source": "test override",
+    "forbid": {
+        "fast": True,
+        "service_tiers": ["fast", "priority"],
+        "models": [["astra"], ["fable"], ["opus", "4.6"], ["opus", "5"], ["opus", "5.1"]],
+        "reason": "cost",
+    },
+    "routes": {
+        "codex": {"default": {"model": "gpt-6.1-sol", "effort": "low"}},
+        "cursor": {"default": {"prefer": ["claude-opus-5-5-high"],
+                               "fallback": {"require": ["high"], "exclude": ["composer", "fast", "auto"]},
+                               "effort": "high"}},
+        "grok": {"default": {"prefer": [["grok-4.7", "high"], ["grok-4.6", "high"]]}},
+    },
+    "spawn": {"kind": "claude", "model": "claude-opus-5-5", "effort": "high"},
+    "helper": {"agent": "codex", "model": "gpt-6.1-sol", "effort": "low"},
+    "notes": ["Antigravity is Gemini only."],
+}
+
+SOL_CATALOG = json.dumps({"models": [
+    {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1-Sol", "visibility": "list",
+     "default_reasoning_level": "low",
+     "supported_reasoning_levels": [{"effort": e} for e in ("low", "medium", "high")],
+     "service_tiers": [{"id": "priority", "name": "Fast"}], "additional_speed_tiers": ["fast"]},
+    {"slug": "gpt-6-astra", "display_name": "GPT-6-Astra", "visibility": "list",
+     "default_reasoning_level": "medium",
+     "supported_reasoning_levels": [{"effort": "medium"}],
+     "service_tiers": [{"id": "priority", "name": "Fast"}], "additional_speed_tiers": ["fast"]},
+    {"slug": "gpt-7-nova", "display_name": "GPT-7-Nova", "visibility": "list",
+     "default_reasoning_level": "medium",
+     "supported_reasoning_levels": [{"effort": "medium"}]},
+]})
+
+
+class Policy(unittest.TestCase):
+    def override(self, data):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        path = os.path.join(directory, "model-policy.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(data if isinstance(data, str) else json.dumps(data))
+        return patch.dict(os.environ, {"HERDR_PLUGIN_CONFIG_DIR": directory})
+
+    def test_shipped_policy_reproduces_todays_defaults(self):
+        shipped = policy.load()
+        self.assertFalse(shipped["override"])
+        self.assertEqual(shipped["forbid"], {"fast": False, "service_tiers": [], "models": [], "reason": ""})
+        self.assertEqual(route.default_phrase("codex"), "astra")
+        self.assertEqual(route.default_phrase("claude"), "opus high")
+        self.assertEqual(shipped["routes"]["cursor"]["default"]["prefer"], ["gpt-5.6-sol-high-fast"])
+        self.assertEqual(shipped["routes"]["cursor"]["helper_model"], "grok-4.7-high-fast")
+        self.assertEqual(shipped["routes"]["grok"]["default"]["prefer"][0], ["grok-4.7-build-fast", "medium"])
+        self.assertEqual(shipped["spawn"]["kind"], "claude")
+        with patch.object(route, "run_catalog", return_value=CURSOR_DEFAULTS):
+            result = route.cursor_route("default")
+        self.assertEqual(result, {"kind": "cursor", "model": "gpt-5.6-sol-high-fast", "effort": "high",
+                                  "fast": True, "argv": ["--model", "gpt-5.6-sol-high-fast"]})
+        without_sol = CURSOR_DEFAULTS.replace("gpt-5.6-sol-high-fast - GPT-5.6 Sol High Fast\n", "")
+        with patch.object(route, "run_catalog", return_value=without_sol):
+            # Old fallback: high and fast, never Grok, Composer, or auto.
+            self.assertEqual(route.cursor_route("default")["model"], "claude-opus-5-5-high-fast")
+
+    def test_override_replaces_codex_default_and_spawn_only(self):
+        with self.override(STRICT_OVERRIDE):
+            merged = policy.load()
+            self.assertTrue(merged["override"])
+            self.assertEqual(route.default_phrase("codex"), "gpt-6.1-sol low")
+            self.assertEqual(route.default_phrase("claude"), "opus high")  # untouched kind keeps shipped
+            self.assertEqual(merged["routes"]["cursor"]["helper_model"], "grok-4.7-high-fast")  # per-key merge
+            self.assertEqual(merged["spawn"], STRICT_OVERRIDE["spawn"])
+            self.assertEqual(merged["notes"], ["Antigravity is Gemini only."])
+            with patch.object(route, "run_catalog", return_value=SOL_CATALOG):
+                result = route.codex_route("default")
+            self.assertEqual(result["argv"], ["-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="low"',
+                                              "-c", 'service_tier="default"'])
+            shell = policy.shell_defaults(merged)
+            self.assertIn("HELPER_POLICY_SPAWN_MODEL=claude-opus-5-5", shell)
+            self.assertIn("HELPER_POLICY_AGENT=codex", shell)
+
+    def test_forbid_models_blocks_families_not_opus_55(self):
+        with self.override(STRICT_OVERRIDE):
+            merged = policy.load()
+            for model in ("gpt-6-astra", "claude-fable-5-1", "claude-opus-5", "claude-opus-5-1",
+                          "claude-opus-4-6-thinking", "claude-opus-5-high"):
+                self.assertIsNotNone(policy.forbidden_model(merged, model), model)
+            for model in ("claude-opus-5-5", "claude-opus-5-5[1m]", "gpt-6.1-sol", "claude-sonnet-5-5"):
+                self.assertIsNone(policy.forbidden_model(merged, model), model)
+            with patch.object(route, "run_catalog", return_value=SOL_CATALOG):
+                with self.assertRaisesRegex(route.RouteError, "forbidden"):
+                    route.codex_route("astra")
+            with patch.object(route, "run_catalog", side_effect=claude_read):
+                with self.assertRaisesRegex(route.RouteError, "forbidden"):
+                    route.claude_route("fable high")
+                # The fixture alias opus resolves to claude-opus-5: the ban
+                # applies to the resolved id, not the alias.
+                with self.assertRaisesRegex(route.RouteError, "claude-opus-5 is forbidden"):
+                    route.claude_route("opus high")
+
+            def opus_55(command, *, input_text=None):
+                text = claude_read(command, input_text=input_text)
+                return text.replace('"claude-opus-5"', '"claude-opus-5-5"') if input_text else text
+            with patch.object(route, "run_catalog", side_effect=opus_55):
+                self.assertEqual(route.claude_route("opus high")["model"], "claude-opus-5-5")
+
+    def test_forbid_fast_blocks_phrases_and_fast_ids(self):
+        with self.override(STRICT_OVERRIDE):
+            with patch.object(route, "run_catalog", return_value=SOL_CATALOG):
+                with self.assertRaisesRegex(route.RouteError, "fast"):
+                    route.codex_route("6.1 sol high fast")
+            with patch.object(route, "run_catalog", return_value=CURSOR_DEFAULTS):
+                with self.assertRaisesRegex(route.RouteError, "fast"):
+                    route.cursor_route("5.6 sol high fast")
+                # The default skips forbidden ids instead of failing on them.
+                self.assertEqual(route.cursor_route("default")["model"], "claude-opus-5-5-high")
+            with patch.object(preflight, "run", return_value=CURSOR_DEFAULTS):
+                with self.assertRaisesRegex(preflight.CheckError, "fast"):
+                    preflight.check("cursor", "grok-4.7-high-fast", "")
+            merged = policy.load()
+            self.assertTrue(policy.argv_violations(merged, "cursor", ["--model", "grok-4.7-high-fast"]))
+
+    def test_check_argv_blocks_priority_tier(self):
+        merged_shipped = policy.load()
+        argv = ["-m", "gpt-6.1-sol", "-c", 'service_tier="priority"']
+        self.assertEqual(policy.argv_violations(merged_shipped, "codex", argv), [])
+        with self.override(STRICT_OVERRIDE):
+            merged = policy.load()
+            self.assertTrue(policy.argv_violations(merged, "codex", argv))
+            self.assertTrue(policy.argv_violations(merged, "codex", ["--config=service_tier=fast"]))
+            self.assertEqual(policy.argv_violations(
+                merged, "codex", ["-m", "gpt-6.1-sol", "-c", 'service_tier="default"']), [])
+            self.assertEqual(policy.main(["check-argv", "codex", "--", *argv]), 2)
+            self.assertEqual(policy.main(["check-argv", "codex", "--", "-m", "gpt-6.1-sol"]), 0)
+
+    def test_malformed_override_fails_loudly(self):
+        for broken in ("{not json", json.dumps({"schema": 2}),
+                       json.dumps({"schema": 1, "forbid": {"models": "astra"}}),
+                       json.dumps({"schema": 1, "routes": {"gemini": {}}})):
+            with self.override(broken):
+                with self.assertRaises(policy.PolicyError):
+                    policy.load()
+                with patch.object(route, "run_catalog", return_value=SOL_CATALOG):
+                    with self.assertRaisesRegex(route.RouteError, "model policy"):
+                        route.codex_route("default")
+                self.assertEqual(policy.main(["policy"]), 2)
+
+    def test_user_named_model_outside_policy_still_routes(self):
+        with self.override(STRICT_OVERRIDE):
+            with patch.object(route, "run_catalog", return_value=SOL_CATALOG):
+                result = route.codex_route("gpt-7 nova")
+            self.assertEqual(result["model"], "gpt-7-nova")
+
+    def test_preflight_drops_forbidden_substitute(self):
+        def run(command, *, input_text=None):
+            if command != ["claude", "/usage", "-p", "--output-format", "json"]:
+                return claude_read(command, input_text=input_text)
+            return json.dumps({"result": "Current session: 0% used\nCurrent week (Opus): 100% used"})
+        override = dict(STRICT_OVERRIDE, forbid=dict(STRICT_OVERRIDE["forbid"], models=[["sonnet"]]))
+        with self.override(override):
+            with patch.object(preflight, "run", side_effect=run):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    code = preflight.check("claude", "opus", "high")
+            self.assertEqual(code, 3)
+            self.assertIsNone(json.loads(output.getvalue())["substitute"])
+
+    def test_policy_prompt_names_defaults_and_bans(self):
+        shipped = policy.render_prompt(policy.load())
+        self.assertIn("Forbidden: nothing", shipped)
+        self.assertIn("Grok Build → `--kind grok` with no `--model`", shipped)
+        with self.override(STRICT_OVERRIDE):
+            text = policy.render_prompt(policy.load())
+        self.assertIn("`gpt-6.1-sol` at effort low", text)
+        self.assertIn("every fast route", text)
+        self.assertIn("astra; fable; opus 4.6; opus 5; opus 5.1", text)
+        self.assertIn("against the live catalog", text)
+        self.assertIn("Antigravity is Gemini only.", text)
+        self.assertNotIn("Codex Astra high", text)
+        self.assertNotIn("high fast →", text)
+
+
+CURSOR_DEFAULTS = """Available models
+auto - Auto (default)
+gpt-5.6-sol-high-fast - GPT-5.6 Sol High Fast
+grok-4.7-high-fast - Grok 4.7 High Fast
+composer-2-high-fast - Composer 2 High Fast
+claude-opus-5-5-high-fast - Claude Opus 5.5 1M High Fast
+claude-opus-5-5-high - Claude Opus 5.5 1M
+"""
 
 
 if __name__ == "__main__":
