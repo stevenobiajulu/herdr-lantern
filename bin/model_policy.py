@@ -39,6 +39,22 @@ class PolicyError(ValueError):
     pass
 
 
+def forbid_words(value: str) -> set[str]:
+    """model_words for the forbid check only (catalog routing keeps the raw
+    words). Dated ids carry a date component that model_words folds into the
+    version: claude-opus-5-20261001 -> 5.20261001. Drop dot components of six
+    or more digits so a ban on opus 5 still sees 5; claude-opus-5-5 stays 5.5."""
+    words = set()
+    for word in model_words(value.lower()):
+        if word[:1].isdigit():
+            parts = [part for part in word.split(".") if not (part.isdigit() and len(part) >= 6)]
+            word = ".".join(parts)
+            if not word:
+                continue
+        words.add(word)
+    return words
+
+
 def plugin_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -157,9 +173,9 @@ def _reason(policy: dict) -> str:
 def forbidden_model(policy: dict, model_id: str) -> str | None:
     """Why this model id is refused, or None. Matches token sets, so
     claude-opus-5-5 is not caught by a ban on opus 5."""
-    tokens = set(model_words(model_id))
+    tokens = forbid_words(model_id)
     for group in _forbid(policy).get("models", []):
-        wanted = set(model_words(" ".join(group)))
+        wanted = forbid_words(" ".join(group))
         if wanted and wanted <= tokens:
             return f"{model_id} is forbidden by the {_reason(policy)} (matches {' '.join(group)})"
     if _forbid(policy).get("fast") and "fast" in tokens:
@@ -181,11 +197,11 @@ def forbidden_tier(policy: dict, tier: str, name: str = "") -> str | None:
 
 def forbidden_phrase(policy: dict, phrase: str) -> str | None:
     """Static check of a spoken phrase, before any catalog read."""
-    tokens = set(model_words(phrase.lower()))
+    tokens = forbid_words(phrase)
     if _forbid(policy).get("fast") and "fast" in tokens:
         return f'"{phrase}" asks for fast; fast routes are forbidden by the {_reason(policy)}'
     for group in _forbid(policy).get("models", []):
-        wanted = set(model_words(" ".join(group)))
+        wanted = forbid_words(" ".join(group))
         if wanted and wanted <= tokens:
             return f'"{phrase}" names a model forbidden by the {_reason(policy)} (matches {" ".join(group)})'
     return None

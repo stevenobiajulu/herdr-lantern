@@ -469,6 +469,29 @@ class Policy(unittest.TestCase):
             with patch.object(route, "run_catalog", side_effect=opus_55):
                 self.assertEqual(route.claude_route("opus high")["model"], "claude-opus-5-5")
 
+    def test_forbid_models_sees_through_dated_ids(self):
+        self.assertEqual(policy.forbid_words("claude-opus-5-20261001"), {"claude", "opus", "5"})
+        self.assertEqual(policy.forbid_words("claude-opus-4-6-20250929"), {"claude", "opus", "4.6"})
+        self.assertEqual(policy.forbid_words("claude-opus-5-5"), {"claude", "opus", "5.5"})
+        with self.override(STRICT_OVERRIDE):
+            merged = policy.load()
+            for model in ("claude-opus-5-20261001", "claude-opus-4-6-20250929", "claude-opus-5-1-20261001",
+                          "claude-fable-5-1-20261001"):
+                self.assertIsNotNone(policy.forbidden_model(merged, model), model)
+            for model in ("claude-opus-5-5", "claude-opus-5-5-20261001", "claude-haiku-4-5-20251001"):
+                self.assertIsNone(policy.forbidden_model(merged, model), model)
+            self.assertTrue(policy.argv_violations(merged, "claude", ["--model", "claude-opus-5-20261001"]))
+
+    def test_forbid_applies_to_resolved_dated_id_behind_an_alias(self):
+        def dated(command, *, input_text=None):
+            text = claude_read(command, input_text=input_text)
+            return text.replace('"claude-opus-5"', '"claude-opus-5-20261001"') if input_text else text
+        with self.override(STRICT_OVERRIDE):
+            self.assertIsNone(policy.forbidden_phrase(policy.load(), "opus high"))
+            with patch.object(route, "run_catalog", side_effect=dated):
+                with self.assertRaisesRegex(route.RouteError, "claude-opus-5-20261001 is forbidden"):
+                    route.claude_route("opus high")
+
     def test_forbid_fast_blocks_phrases_and_fast_ids(self):
         with self.override(STRICT_OVERRIDE):
             with patch.object(route, "run_catalog", return_value=SOL_CATALOG):
