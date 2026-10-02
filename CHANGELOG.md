@@ -11,6 +11,9 @@ All notable changes to Lantern, by Elves are documented here.
   each kind's default route, the spawn and helper defaults used when
   `helper.conf` leaves them empty, and a `forbid` list of fast routes,
   service tiers, and model families. See `docs/model-policy.md`.
+- An `agy` route kind: `routes.agy.default.model` names the Agy (Gemini)
+  review default (shipped: `gemini-3.8-flash-high`); an empty string means
+  agy's own served default with no `--model`.
 - `model-route policy`, `policy-prompt`, `check-phrase`, and `check-argv`
   print and check the effective policy.
 - The forbid list is enforced by the resolver (default and spoken routes),

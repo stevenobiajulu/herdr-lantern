@@ -92,7 +92,8 @@ When the kind is omitted, Astra or gpt-6 astra selects Codex. `gpt-6 sol`
 and `gpt-6 luna` are explicit Codex models. Bare `sol`, bare `luna`, and
 bare `gpt-6` are ambiguous. Fable selects
 Claude Code unless the user names Cursor or another harness. An explicit
-harness always wins and must have that model in its own catalog.
+harness always wins and must have that model in its own catalog. The
+injected Model policy forbid list still applies after harness selection.
 
 Resolve and preflight the driver and every named phase model before seating.
 Use `bin/model-route` and `bin/model-preflight` for covered kinds. For OMP,
@@ -691,8 +692,8 @@ Use a supervised terminal seat for Boost. Start it with
 --model <listed-id> --effort <listed-effort> --mode plan`.
 At its verified ready prompt, send `/boost <review request>` once. Every Agy
 review and re-review requires `/boost`, including small changes. Keep slash
-command expansion enabled. Never pass `--disable-slash-commands`. Prefer
-`gemini-3.8-flash-high` when its live catalog lists it and no model was named.
+command expansion enabled. Never pass `--disable-slash-commands`. When no
+model was named, follow the Agy default in the injected Model policy section.
 Use a separate session from every agent that wrote code. Require the exact
 commit, file and line evidence, failure conditions, and checks that could
 disprove each finding. Keep unsupported concerns separate from defects.

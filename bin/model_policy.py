@@ -20,7 +20,7 @@ from model_catalog import model_words
 
 SCHEMA = 1
 POLICY_FILE = "model-policy.json"
-KINDS = ("claude", "codex", "cursor", "grok", "fugu")
+KINDS = ("claude", "codex", "cursor", "grok", "fugu", "agy")
 
 # Onboarding answers and the onboard apply argv they map to. Grammar, not
 # defaults: the policy filters out any example its forbid list refuses.
@@ -123,6 +123,7 @@ ROUTE_KEYS = {
     "cursor": {"default", "helper_model"},
     "grok": {"default"},
     "fugu": set(),
+    "agy": {"default"},
 }
 
 
@@ -146,7 +147,8 @@ def _check_route(kind: str, value: dict, need) -> None:
     where = f"routes.{kind}.default"
     need(isinstance(default, dict), f"{where} must be an object")
     allowed = {"claude": {"model", "effort"}, "codex": {"model", "effort"},
-               "cursor": {"prefer", "fallback", "effort"}, "grok": {"prefer"}}[kind]
+               "cursor": {"prefer", "fallback", "effort"}, "grok": {"prefer"},
+               "agy": {"model"}}[kind]
     unknown = sorted(set(default) - allowed)
     need(not unknown, f"{where} has unknown keys: {', '.join(unknown)}")
     if kind in ("claude", "codex"):
@@ -160,6 +162,10 @@ def _check_route(kind: str, value: dict, need) -> None:
              f"{where}.fallback must be an object with require and exclude")
         for field in ("require", "exclude"):
             need(_is_str_list(fallback.get(field, [])), f"{where}.fallback.{field} must be a list of strings")
+    elif kind == "agy":
+        # Empty means agy serves its own default: pass no --model. Its
+        # published catalog can trail what it serves.
+        need(isinstance(default.get("model"), str), f"{where}.model must be a string (empty = agy default)")
     elif kind == "grok":
         prefer = default.get("prefer")
         need(isinstance(prefer, list) and all(
@@ -198,6 +204,12 @@ def load(shipped: str | None = None, override: str | None = None, *, use_env: bo
     policy.setdefault("routes", {})
     for kind in KINDS:
         policy["routes"].setdefault(kind, {})
+    # Agy's default is a static id, not a live route, so check it here.
+    agy_model = policy["routes"]["agy"].get("default", {}).get("model", "")
+    if agy_model:
+        why = forbidden_model(policy, agy_model)
+        if why:
+            raise PolicyError(f"routes.agy.default.model: {why}")
     policy.setdefault("spawn", {})
     policy.setdefault("helper", {})
     policy.setdefault("notes", [])
@@ -375,6 +387,13 @@ def _default_words(policy: dict) -> dict:
         f"HELPER_MODEL runs `{routes['cursor'].get('helper_model', '')}`."
     )
     grok = routes["grok"].get("default", {})
+    agy = routes["agy"].get("default", {})
+    if agy.get("model"):
+        words["agy"] = (f"prefer `{agy['model']}` when `agy models` lists it and the user named no model; "
+                        "otherwise name the listed id you use.")
+    else:
+        words["agy"] = ("agy\u2019s own served default; do not pass `--model` (the published `agy models` "
+                        "catalog can trail what agy serves).")
     words["grok"] = "`model-route grok default` prefers " + (", then ".join(
         f"`{name}` at {effort}" for name, effort in grok.get("prefer", [])) or "nothing") + "."
     return words
@@ -392,6 +411,7 @@ def render_prompt(policy: dict) -> str:
     lines.append(f"- Codex default: {words['codex']}")
     lines.append(f"- Cursor default: {words['cursor']}")
     lines.append(f"- Grok Build default: {words['grok']}")
+    lines.append(f"- Agy (Gemini) default: {words['agy']}")
     spawn = policy.get("spawn", {})
     if spawn.get("kind"):
         lines.append(

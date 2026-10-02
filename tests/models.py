@@ -550,6 +550,31 @@ class Policy(unittest.TestCase):
                 self.assertTrue(policy.argv_violations(merged, "codex", argv), argv)
                 self.assertEqual(policy.main(["check-argv", "codex", "--", *argv]), 2, argv)
 
+    def test_agy_default_route(self):
+        shipped = policy.load()
+        self.assertEqual(shipped["routes"]["agy"]["default"], {"model": "gemini-3.8-flash-high"})
+        text = policy.render_prompt(shipped)
+        self.assertIn("Agy (Gemini) default: prefer `gemini-3.8-flash-high` when `agy models` lists it", text)
+        with self.override({"schema": 1, "routes": {"agy": {"default": {"model": ""}}}}):
+            merged = policy.load()
+            self.assertEqual(merged["routes"]["agy"]["default"], {"model": ""})
+            self.assertIn("Agy (Gemini) default: agy\u2019s own served default; do not pass `--model`",
+                          policy.render_prompt(merged))
+        for broken in ({"model": 4}, {"model": None}, {}, {"model": "x", "effort": "high"}, "gemini"):
+            with self.override({"schema": 1, "routes": {"agy": {"default": broken}}}):
+                with self.assertRaises(policy.PolicyError, msg=broken):
+                    policy.load()
+                self.assertEqual(policy.main(["prompt"]), 2, broken)
+        # Forbid applies to a named agy default, and to an agy start argv.
+        strict = dict(STRICT_OVERRIDE, routes={"agy": {"default": {"model": "claude-opus-4-6-thinking"}}})
+        with self.override(strict):
+            with self.assertRaisesRegex(policy.PolicyError, "routes.agy.default.model"):
+                policy.load()
+        with self.override(STRICT_OVERRIDE):
+            merged = policy.load()
+            self.assertTrue(policy.argv_violations(merged, "agy", ["--model", "claude-opus-4-6-thinking"]))
+            self.assertEqual(policy.argv_violations(merged, "agy", ["--model", "gemini-3.8-flash-high"]), [])
+
     def test_nested_route_fields_are_validated(self):
         # Review finding 4: a wrongly typed nested route field loaded fine.
         broken_routes = (

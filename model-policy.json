@@ -38,7 +38,10 @@
         ]
       }
     },
-    "fugu": {}
+    "fugu": {},
+    "agy": {
+      "default": {"model": "gemini-3.8-flash-high"}
+    }
   },
   "spawn": {"kind": "claude", "model": "", "effort": ""},
   "helper": {"agent": "", "model": "", "effort": ""},

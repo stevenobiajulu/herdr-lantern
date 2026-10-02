@@ -51,7 +51,8 @@ on exit 2.
                            "effort": "high"},
                "helper_model": "grok-4.7-high-fast"},
     "grok":   {"default": {"prefer": [["grok-4.7-build-fast", "medium"], ["grok-4.7", "high"]]}},
-    "fugu":   {}
+    "fugu":   {},
+    "agy":    {"default": {"model": "gemini-3.8-flash-high"}}
   },
   "spawn":  {"kind": "claude", "model": "", "effort": ""},
   "helper": {"agent": "", "model": "", "effort": ""},
@@ -66,6 +67,7 @@ on exit 2.
 | `forbid.models` | Token lists. A **resolved** model id is refused when every token in a list appears in its words. Words follow `model_words`: `claude-opus-5-5` is `claude opus 5.5`, so `["opus", "5"]` refuses `claude-opus-5` and `claude-opus-5-high` but not `claude-opus-5-5`. An alias is checked after the live catalog resolves it. For this check only, a date component of six or more digits is dropped from a version, so `claude-opus-5-20261001` reads as `opus 5` and is refused too, while `claude-opus-5-5-20261001` stays `opus 5.5`. |
 | `forbid.reason` | Shown in every refusal. |
 | `routes.<kind>.default` | What `model-route <kind> default` resolves. Claude and Codex take a `model` phrase or catalog id plus an `effort` (`null` = the catalog default; Codex always sets `service_tier="default"`). Cursor takes `prefer` ids, then a `fallback` token rule. Grok takes `prefer` pairs of `[id, effort]`. A candidate the forbid list refuses is skipped; when none is left the route fails rather than guessing. |
+| `routes.agy.default.model` | The Agy (Gemini) review model when the user names none: a listed id, preferred when `agy models` lists it. An empty string means agy's own served default: pass no `--model`, because the published catalog can trail what agy serves. A non-empty id must pass `forbid` when the policy loads. |
 | `routes.cursor.helper_model` | The Cursor helper chat model when `HELPER_MODEL` is empty. |
 | `spawn` | Used when `helper.conf` leaves `HELPER_SPAWN_KIND` empty. The three values move together. |
 | `helper` | `agent` fills an empty `HELPER_AGENT`. `model` and `effort` fill empty `HELPER_MODEL`/`HELPER_EFFORT` only when `HELPER_AGENT` is that agent. |

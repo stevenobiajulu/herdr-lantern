@@ -487,7 +487,7 @@ transport block. Do not change models to fix it. A named Claude Code review
 must not become an OMP or Cursor review without a user choice.
 
 Agy reviews and re-reviews always use `/boost` in plan mode. The default
-review preference is `gemini-3.8-flash-high` when listed. Each reviewer uses
+review preference is `gemini-3.8-flash-high` when listed (the shipped model policy `routes.agy.default`). Each reviewer uses
 a separate session from the code writers. If Boost fails or its activation
 cannot be confirmed, the route is unavailable. Use an already approved
 independent fallback or report a block. Plain Agy does not satisfy review.
