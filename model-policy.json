@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "source": "Lantern shipped defaults. Override any part in $HERDR_PLUGIN_CONFIG_DIR/model-policy.json; see docs/model-policy.md.",
+  "forbid": {
+    "fast": false,
+    "service_tiers": [],
+    "models": [],
+    "reason": ""
+  },
+  "routes": {
+    "claude": {
+      "default": {"model": "opus", "effort": "high"}
+    },
+    "codex": {
+      "default": {"model": "astra", "effort": null}
+    },
+    "cursor": {
+      "default": {
+        "prefer": ["gpt-5.6-sol-high-fast"],
+        "fallback": {"require": ["high", "fast"], "exclude": ["composer", "grok", "auto"]},
+        "effort": "high"
+      },
+      "helper_model": "grok-4.7-high-fast"
+    },
+    "grok": {
+      "default": {
+        "prefer": [
+          ["grok-4.7-build-fast", "medium"],
+          ["grok-4.7", "high"],
+          ["grok-4.7-high-fast", "high"],
+          ["grok-4.7-fast", "high"],
+          ["grok-4.6-high-fast", "high"],
+          ["grok-4.6-fast", "high"],
+          ["grok-4.6", "high"],
+          ["grok-4.5-high-fast", "high"],
+          ["grok-4.5-fast", "high"],
+          ["grok-4.5", "high"]
+        ]
+      }
+    },
+    "fugu": {}
+  },
+  "spawn": {"kind": "claude", "model": "", "effort": ""},
+  "helper": {"agent": "", "model": "", "effort": ""},
+  "notes": []
+}
