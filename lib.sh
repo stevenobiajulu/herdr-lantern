@@ -770,6 +770,12 @@ helper_is_agent_prompt() {
     [ "${1:-}" = agent ] && [ "${2:-}" = prompt ] && [ -n "${3:-}" ] && [ -n "${4:-}" ]
 }
 
+helper_is_agent_start_verb() {
+    # Any agent start, options before the name or not. The policy gate uses
+    # this; the relay keeps the stricter helper_is_agent_start below.
+    [ "${1:-}" = agent ] && [ "${2:-}" = start ]
+}
+
 helper_is_agent_start() {
     [ "${1:-}" = agent ] && [ "${2:-}" = start ] && [ -n "${3:-}" ] || return 1
     case $3 in

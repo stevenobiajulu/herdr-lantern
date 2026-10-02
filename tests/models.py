@@ -521,6 +521,51 @@ class Policy(unittest.TestCase):
             self.assertEqual(policy.main(["check-argv", "codex", "--", *argv]), 2)
             self.assertEqual(policy.main(["check-argv", "codex", "--", "-m", "gpt-6.1-sol"]), 0)
 
+    def test_check_argv_every_option_spelling(self):
+        # Review finding 1: attached short options bypassed the check.
+        with self.override(STRICT_OVERRIDE):
+            merged = policy.load()
+            for argv in (["-mgpt-6-astra"], ["-m", "gpt-6-astra"], ["--model=gpt-6-astra"],
+                         ["--model", "gpt-6-astra"], ["-cmodel=gpt-6-astra"],
+                         ["-cservice_tier=priority"], ["-c", "service_tier='priority'"],
+                         ["-c", 'service_tier="priority"'], ["--config", "service_tier=fast"],
+                         ["--config=service_tier=priority"], ["--config=model=\"gpt-6-astra\""]):
+                self.assertTrue(policy.argv_violations(merged, "codex", argv), argv)
+                self.assertEqual(policy.main(["check-argv", "codex", "--", *argv]), 2, argv)
+            for argv in (["-mgpt-6.1-sol"], ["-cservice_tier=default"], ["-cmodel_reasoning_effort=low"],
+                         ["-m", "gpt-6.1-sol", "-c", 'service_tier="default"']):
+                self.assertEqual(policy.argv_violations(merged, "codex", argv), [], argv)
+
+    def test_nested_route_fields_are_validated(self):
+        # Review finding 4: a wrongly typed nested route field loaded fine.
+        broken_routes = (
+            {"codex": {"default": {"model": "astra", "effort": 123}}},
+            {"codex": {"default": {"model": 5}}},
+            {"codex": {"default": "astra"}},
+            {"claude": {"default": {"model": "opus", "effort": ["high"]}}},
+            {"cursor": {"default": {"prefer": "gpt-5.6-sol-high-fast"}}},
+            {"cursor": {"default": {"prefer": [], "fallback": {"require": "high"}}}},
+            {"cursor": {"default": {"prefer": [], "effort": 1}}},
+            {"cursor": {"helper_model": 7}},
+            {"grok": {"default": {"prefer": [["grok-4.7"]]}}},
+            {"grok": {"default": {"prefer": [["grok-4.7", 3]]}}},
+            {"fugu": {"default": 1}},
+        )
+        for routes in broken_routes:
+            with self.override({"schema": 1, "routes": routes}):
+                with self.assertRaises(policy.PolicyError, msg=routes):
+                    policy.load()
+                self.assertEqual(policy.main(["check-argv", "codex", "--", "-m", "x"]), 2, routes)
+                self.assertEqual(policy.main(["shell"]), 2, routes)
+                with patch.object(route, "run_catalog", return_value=SOL_CATALOG):
+                    with self.assertRaisesRegex(route.RouteError, "model policy", msg=routes):
+                        route.codex_route("gpt-6.1 sol")
+                with patch.object(preflight, "run", return_value=SOL_CATALOG):
+                    with self.assertRaises(preflight.CheckError, msg=routes):
+                        preflight.check("codex", "gpt-6.1-sol", "")
+        with self.override({"schema": 1, "routes": {"codex": {"default": {"model": "gpt-6.1-sol", "effort": None}}}}):
+            self.assertEqual(policy.load()["routes"]["codex"]["default"]["model"], "gpt-6.1-sol")
+
     def test_malformed_override_fails_loudly(self):
         for broken in ("{not json", json.dumps({"schema": 2}),
                        json.dumps({"schema": 1, "forbid": {"models": "astra"}}),

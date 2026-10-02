@@ -52,6 +52,10 @@ done
 }
 state_dir=${state_dir:-$config_dir/state}
 conf=$config_dir/helper.conf
+# The policy readers find the user override through this variable, so it
+# must name the directory onboard is actually configuring.
+HERDR_PLUGIN_CONFIG_DIR=$config_dir
+export HERDR_PLUGIN_CONFIG_DIR
 
 load_conf() {
     HELPER_AGENT=""

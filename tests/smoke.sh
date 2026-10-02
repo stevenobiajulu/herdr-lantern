@@ -1300,6 +1300,40 @@ HERDR_REAL="$policy_dir/herdr" HERDR_HELPER_OK=1 HERDR_PLUGIN_CONFIG_DIR="$polic
     sh "$root/bin/herdr" agent start seat --kind codex -- -m gpt-6.1-sol -c 'service_tier="default"' \
     >/dev/null 2>"$err" || fail "the model policy blocked an allowed agent start"
 grep -qF 'gpt-6.1-sol' "$policy_dir/calls.log" || fail "an allowed start did not reach the real herdr"
+# Review finding 2: options before the seat name must not skip the gate.
+rm -f "$policy_dir/calls.log"
+for policy_argv in '--kind codex review-seat -- --model=gpt-6-astra' \
+    '--pane w1:p1 --kind codex review-seat -- -mgpt-6-astra' \
+    '--kind=codex review-seat -- -cservice_tier=priority'; do
+    # Word splitting is intentional: fixed test argv.
+    # shellcheck disable=SC2086
+    if HERDR_REAL="$policy_dir/herdr" HERDR_HELPER_OK=1 HERDR_PLUGIN_CONFIG_DIR="$policy_dir" \
+        sh "$root/bin/herdr" agent start $policy_argv 2>"$err"; then
+        fail "agent start $policy_argv skipped the model policy gate"
+    fi
+done
+[ ! -f "$policy_dir/calls.log" ] || fail "an options-first forbidden start reached the real herdr"
+# An allowed options-first start still goes straight to the real herdr.
+HERDR_REAL="$policy_dir/herdr" HERDR_HELPER_OK=1 HERDR_PLUGIN_CONFIG_DIR="$policy_dir" \
+    sh "$root/bin/herdr" agent start --kind codex review-seat -- --model=gpt-6.1-sol \
+    >/dev/null 2>"$err" || fail "the model policy blocked an allowed options-first start"
+grep -qF 'agent start --kind codex review-seat -- --model=gpt-6.1-sol' "$policy_dir/calls.log" ||
+    fail "an allowed options-first start did not reach the real herdr unchanged"
+# Review finding 3: onboard --config-dir reads that directory's policy even
+# when HERDR_PLUGIN_CONFIG_DIR is unset or points elsewhere.
+mkdir -p "$policy_dir/cfg" "$policy_dir/other"
+cp "$policy_dir/model-policy.json" "$policy_dir/cfg/model-policy.json"
+for onboard_env in '' "$policy_dir/other"; do
+    if HERDR_PLUGIN_CONFIG_DIR="$onboard_env" sh "$root/bin/onboard" --config-dir "$policy_dir/cfg" \
+        apply --kind codex --model astra >/dev/null 2>"$err"; then
+        fail "onboard --config-dir ignored the model policy in that directory"
+    fi
+    grep -qF 'forbidden' "$err" || fail "onboard --config-dir refusal did not name the policy"
+done
+if grep -qF 'HELPER_SPAWN_MODEL="astra"' "$policy_dir/cfg/helper.conf" 2>/dev/null; then
+    fail "onboard --config-dir stored a forbidden spawn model"
+fi
+rm -rf "$policy_dir/cfg" "$policy_dir/other"
 rm -f "$policy_dir/calls.log" "$policy_dir/model-policy.json"
 HERDR_REAL="$policy_dir/herdr" HERDR_HELPER_OK=1 HERDR_PLUGIN_CONFIG_DIR="$policy_dir" \
     sh "$root/bin/herdr" agent start seat --kind codex -- -m gpt-6-astra >/dev/null 2>"$err" ||

@@ -108,12 +108,63 @@ def _check_shape(policy: dict, label: str) -> None:
     for kind, value in routes.items():
         need(kind in KINDS, f"routes.{kind} is not a known kind ({', '.join(KINDS)})")
         need(isinstance(value, dict), f"routes.{kind} must be an object")
+        _check_route(kind, value, need)
     for section in ("spawn", "helper"):
         value = policy.get(section, {})
         need(isinstance(value, dict) and all(isinstance(v, str) for v in value.values()),
              f"{section} must be an object of strings")
     notes = policy.get("notes", [])
     need(isinstance(notes, list) and all(isinstance(n, str) for n in notes), "notes must be a list of strings")
+
+
+ROUTE_KEYS = {
+    "claude": {"default"},
+    "codex": {"default"},
+    "cursor": {"default", "helper_model"},
+    "grok": {"default"},
+    "fugu": set(),
+}
+
+
+def _is_str_list(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) and item for item in value)
+
+
+def _effort_ok(value: object) -> bool:
+    return value is None or isinstance(value, str)
+
+
+def _check_route(kind: str, value: dict, need) -> None:
+    """Every nested field has its type, so a bad override stops every reader."""
+    unknown = sorted(set(value) - ROUTE_KEYS[kind])
+    need(not unknown, f"routes.{kind} has unknown keys: {', '.join(unknown)}")
+    if "helper_model" in value:
+        need(isinstance(value["helper_model"], str), f"routes.{kind}.helper_model must be a string")
+    if "default" not in value:
+        return
+    default = value["default"]
+    where = f"routes.{kind}.default"
+    need(isinstance(default, dict), f"{where} must be an object")
+    allowed = {"claude": {"model", "effort"}, "codex": {"model", "effort"},
+               "cursor": {"prefer", "fallback", "effort"}, "grok": {"prefer"}}[kind]
+    unknown = sorted(set(default) - allowed)
+    need(not unknown, f"{where} has unknown keys: {', '.join(unknown)}")
+    if kind in ("claude", "codex"):
+        need(isinstance(default.get("model"), str) and default.get("model"), f"{where}.model must be a nonempty string")
+        need(_effort_ok(default.get("effort")), f"{where}.effort must be a string or null")
+    elif kind == "cursor":
+        need(_is_str_list(default.get("prefer", [])), f"{where}.prefer must be a list of model ids")
+        need(_effort_ok(default.get("effort")), f"{where}.effort must be a string or null")
+        fallback = default.get("fallback", {})
+        need(isinstance(fallback, dict) and not (set(fallback) - {"require", "exclude"}),
+             f"{where}.fallback must be an object with require and exclude")
+        for field in ("require", "exclude"):
+            need(_is_str_list(fallback.get(field, [])), f"{where}.fallback.{field} must be a list of strings")
+    elif kind == "grok":
+        prefer = default.get("prefer")
+        need(isinstance(prefer, list) and all(
+            isinstance(pair, list) and len(pair) == 2 and all(isinstance(item, str) and item for item in pair)
+            for pair in prefer), f"{where}.prefer must be a list of [model id, effort] pairs")
 
 
 def merge(base: dict, over: dict) -> dict:
@@ -236,29 +287,35 @@ def argv_violations(policy: dict, kind: str, argv: list[str]) -> list[str]:
     """Policy problems in an agent argv (the part after herdr's --)."""
     models: list[str] = []
     tiers: list[str] = []
+
+    def config(setting: str) -> None:
+        for key, bucket in (("model", models), ("service_tier", tiers)):
+            value = _config_value(setting, key)
+            if value is not None:
+                bucket.append(value)
+
+    # Every spelling a CLI parser accepts: -m X, -mX, --model X, --model=X,
+    # and the same four for -c/--config.
     index = 0
     while index < len(argv):
         arg = argv[index]
         following = argv[index + 1] if index + 1 < len(argv) else ""
         if arg in ("-m", "--model"):
-            models.append(following)
+            models.append(following.strip("\"'"))
+            index += 2
+            continue
+        if arg in ("-c", "--config"):
+            config(following)
             index += 2
             continue
         if arg.startswith("--model="):
-            models.append(arg.split("=", 1)[1])
-        elif arg in ("-c", "--config"):
-            for key, bucket in (("model", models), ("service_tier", tiers)):
-                value = _config_value(following, key)
-                if value is not None:
-                    bucket.append(value)
-            index += 2
-            continue
+            models.append(arg.split("=", 1)[1].strip("\"'"))
         elif arg.startswith("--config="):
-            setting = arg.split("=", 1)[1]
-            for key, bucket in (("model", models), ("service_tier", tiers)):
-                value = _config_value(setting, key)
-                if value is not None:
-                    bucket.append(value)
+            config(arg.split("=", 1)[1])
+        elif arg.startswith("-m") and not arg.startswith("--"):
+            models.append(arg[2:].strip("\"'"))
+        elif arg.startswith("-c") and not arg.startswith("--"):
+            config(arg[2:])
         index += 1
     problems = []
     for model in models:

@@ -23,8 +23,11 @@ bin/model-route check-argv codex -- -m gpt-6-astra -c 'service_tier="priority"'
 
 `check-argv` exits 0 when the argv is allowed and 2 with one message per
 problem when it names a forbidden model, a forbidden service tier, or (under
-`forbid.fast`) a fast model or any non-default tier. `bin/herdr agent start`
-runs it on the argv after `--` and blocks the start on exit 2.
+`forbid.fast`) a fast model or any non-default tier. It reads every spelling:
+`-m X`, `-mX`, `--model X`, `--model=X`, and the same for `-c`/`--config`
+settings of `model` and `service_tier`. `bin/herdr` runs it on the argv after
+`--` for every `agent start`, whatever the option order, and blocks the start
+on exit 2.
 
 ## Schema 1
 
@@ -82,7 +85,9 @@ refuses.
    - `notes` from the override are appended;
    - `source` from the override replaces the shipped one.
 3. An unreadable override, invalid JSON, a `schema` other than `1`, an
-   unknown kind under `routes`, or a field of the wrong type is an error.
+   unknown kind or key under `routes`, or a field of the wrong type at any
+   depth (for example a numeric `effort`, a string `prefer`, or a Grok
+   `prefer` entry that is not an `[id, effort]` pair) is an error.
    Every reader stops with that error; none falls back to the shipped
    values. Launch shows it and asks you to fix the file.
 

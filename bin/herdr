@@ -21,13 +21,16 @@ fi
 
 case ${HERDR_HELPER_OK:-} in
 1 | yes | true)
+    # The model policy (model-policy.json) gates what a seat may run. Check
+    # every agent start, whatever the option order, before any relay.
+    if helper_is_agent_start_verb "$@"; then
+        helper_policy_check_start "$self_dir/.." "$@" || exit 2
+    fi
     if helper_is_agent_prompt "$@"; then
         helper_relay_agent_prompt "$real" "$@"
         exit $?
     fi
     if helper_is_agent_start "$@"; then
-        # The model policy (model-policy.json) gates what a seat may run.
-        helper_policy_check_start "$self_dir/.." "$@" || exit 2
         helper_relay_agent_start "$real" "$@"
         exit $?
     fi
