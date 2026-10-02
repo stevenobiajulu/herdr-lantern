@@ -2,6 +2,31 @@
 
 All notable changes to Lantern, by Elves are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Model defaults and bans now live in `model-policy.json` instead of code.
+  A user override at `$HERDR_PLUGIN_CONFIG_DIR/model-policy.json` can change
+  each kind's default route, the spawn and helper defaults used when
+  `helper.conf` leaves them empty, and a `forbid` list of fast routes,
+  service tiers, and model families. See `docs/model-policy.md`.
+- `model-route policy`, `policy-prompt`, `check-phrase`, and `check-argv`
+  print and check the effective policy.
+- The forbid list is enforced by the resolver (default and spoken routes),
+  the preflight (including its proposed substitutes), `bin/herdr agent
+  start`, `onboard apply` and `--keep`, and the helper chat launch.
+
+### Changed
+
+- The launch appendix renders its model defaults and onboarding examples
+  from the policy, and its "Live models" paragraph no longer restates dated
+  catalog snapshots. The shipped policy reproduces the previous routes.
+- `helper.conf.example` leaves `HELPER_SPAWN_KIND` empty so the policy
+  spawn default applies (shipped: Claude, live default, as before).
+- A malformed override stops launch, onboard, and every route with a
+  message. It never falls back to the shipped values.
+
 ## [0.16.0] - 2026-09-25
 
 ### Added

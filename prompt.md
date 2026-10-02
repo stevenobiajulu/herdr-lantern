@@ -68,7 +68,7 @@ list` before you create anything. Reuse the workspace for the same cwd.
 | "open the tab", "walk me there", "open finances", "focus finances" | `herdr agent focus <target>`, `herdr workspace focus <workspace_id>`, or `herdr tab focus <tab_id>` | Open it. Ask only when more than one target matches. |
 | "open battle paddle", "open the image maker repo" | Same seat route as a named-kind open, using the user spawn default launch injects | They just name a repo and no harness, model, or setting. Do not ask. Use `$HERDR_PLUGIN_ROOT/bin/onboard show` if the injected default is unclear. |
 | "open battle paddle with codex", "seat another" | `herdr workspace create --cwd <dir> --label <label> --no-focus`, `herdr agent start <slug> --kind <kind> --pane <pane_id> -- <kind args>`, one `herdr agent prompt` that starts with the workspace brief, then `herdr tab rename` | Say the seat plan in one line, then run it. Ask only when the repo, kind, or model does not resolve. Do not create a second workspace for the same cwd. |
-| "make Cursor Grok 4.7 high fast my default spawn", "set my default spawn to Codex astra high", "keep the current default" | `$HERDR_PLUGIN_ROOT/bin/onboard apply` with the mapping: Cursor Grok 4.7 high fast → `--kind cursor --model "grok 4.7 high fast"`; Cursor Grok 4.6 high fast → `--kind cursor --model "cursor grok 4.6 high fast"`; Claude Opus high → `--kind claude --model opus --effort high`; Codex Astra high → `--kind codex --model "astra high"`; Grok Build → `--kind grok` and no `--model`; keep → `--keep` | Store it, then confirm with `onboard show`. Later opens that omit kind and model use this default. The stored phrase is resolved again at seat time. |
+| "make Cursor Grok 4.7 high fast my default spawn", "set my default spawn to Codex astra high", "keep the current default" | `$HERDR_PLUGIN_ROOT/bin/onboard apply` with the onboarding mapping in the injected Model policy section, which drops answers the policy forbids. With the shipped policy: Cursor Grok 4.7 high fast → `--kind cursor --model "grok 4.7 high fast"`; Cursor Grok 4.6 high fast → `--kind cursor --model "cursor grok 4.6 high fast"`; Claude Opus high → `--kind claude --model opus --effort high`; Codex Astra high → `--kind codex --model "astra high"`; Grok Build → `--kind grok` and no `--model`; keep → `--keep` | Store it, then confirm with `onboard show`. Later opens that omit kind and model use this default. The stored phrase is resolved again at seat time. |
 | "open battle paddle with Cursor" | Seat with `--kind cursor` and the live Cursor model route. | "Cursor" selects the Cursor CLI. |
 | "open battle paddle with Grok" | Seat with `--kind grok` and `model-route grok default`. | Bare "Grok" means Grok Build. Do not use `--kind cursor` for that word. |
 | "open battle paddle with Grok Build", "open with SuperGrok" | Seat with `--kind grok` and the live Grok Build model route. | Same route as bare "Grok". |
@@ -164,7 +164,10 @@ The resolver reads `codex debug models`, the Claude initialization catalog, `age
 models`. Claude help supplies CLI grammar, not a model allowlist. Use its `argv` array as separate arguments. If it reports no match or
 more than one match, stop and ask. Never build a slug from memory.
 
-Check these choices against the live CLI before each seat:
+Check these choices against the live CLI before each seat. The rows are
+grammar, not permission: a row the injected Model policy forbids is refused
+by the resolver, preflight, and herdr wrapper. Report that refusal and do
+not look for another way to launch it.
 
 | Kind | Spoken choice | Real argv |
 | --- | --- | --- |
@@ -221,27 +224,32 @@ model. Keep the returned model identity on stage and resume.
 
 When the user does not name a model:
 
-- Codex interactive and review run `model-route codex default`. This selects
-  live Astra with its catalog default effort, currently medium, and no Fast.
-  If Astra is absent, stop and ask. Do not silently substitute Sol, Luna, or GPT-5.5.
-  Bare `sol` and bare `luna` are ambiguous between generation 6 and 5.6.
+- Every kind runs `model-route <kind> default`. The defaults live in
+  `model-policy.json` (shipped) and the user override
+  `$HERDR_PLUGIN_CONFIG_DIR/model-policy.json`; the injected Model policy
+  section names them. Never restate a default from memory. If the default
+  route fails, stop and ask. Do not silently substitute another model.
+- Codex interactive and review run `model-route codex default`, with no
+  Fast. With the shipped policy that is live Astra at its catalog default
+  effort. Bare `sol` and bare `luna` are ambiguous between generations.
 - Claude defaults to the argv from `model-route claude default`, then
   `--permission-mode auto`. Pass the resolved id from that argv. Do not
   replace it with the bare help alias `opus`.
-- Cursor runs `model-route cursor default`. It uses the live
-  `gpt-5.6-sol-high-fast` entry. If that entry is absent, it uses the first
-  live high and fast non-Grok entry. It excludes Composer and never invents
-  an ID.
+- Cursor runs `model-route cursor default`. With the shipped policy it uses
+  the live `gpt-5.6-sol-high-fast` entry, then the first live high and fast
+  non-Grok, non-Composer entry. It never invents an ID.
 - Bare Grok runs `--kind grok` with `model-route grok default`. Do not
   use `--kind cursor` for the word Grok. "Cursor" or "in Cursor with Grok"
   selects the Cursor CLI. A requested Cursor Grok 4.7 id is
   `grok-4.7-high-fast`. A requested Grok 4.6 id remains
   `cursor-grok-4.6-high-fast`. If the requested entry is absent, do not
   switch in silence. Use the substitute process below.
-- Grok Build runs `model-route grok default`. It prefers live
-  `grok-4.7-build-fast` at medium effort, then `grok-4.7` at high effort,
-  then `grok-4.6`, then `grok-4.5`.
-- An explicit user model phrase always wins.
+- Grok Build runs `model-route grok default`. With the shipped policy it
+  prefers live `grok-4.7-build-fast` at medium effort, then `grok-4.7` at
+  high effort, then `grok-4.6`, then `grok-4.5`.
+- An explicit user model phrase always wins, after it resolves in the live
+  catalog, unless the Model policy forbids it. A model missing from the
+  policy is not a reason to refuse.
 - Fugu is a Codex profile, not a Herdr kind. Require `codex-fugu` on PATH.
   If it is missing, stop and name `curl -fsSL https://sakana.ai/fugu/install | bash`.
   Do not start plain Codex. Run `model-route fugu "<phrase>"` against

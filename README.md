@@ -80,7 +80,7 @@ Leave `HELPER_AGENT` empty to use the first of `agent`, `devin`, `claude`, `code
 
 | Helper you want | Install that CLI | `helper.conf` |
 | --- | --- | --- |
-| Cursor Ultra | Cursor CLI on `PATH` as `agent` (also `cursor-agent`) | `HELPER_AGENT="agent"` · `HELPER_MODEL="grok-4.7-high-fast"` (empty also defaults to that) · `HELPER_PERMISSION="smart"` (`--auto-review`) |
+| Cursor Ultra | Cursor CLI on `PATH` as `agent` (also `cursor-agent`) | `HELPER_AGENT="agent"` · `HELPER_MODEL="grok-4.7-high-fast"` (empty uses the model policy `routes.cursor.helper_model`, shipped as that) · `HELPER_PERMISSION="smart"` (`--auto-review`) |
 | Devin | [Devin CLI](https://docs.devin.ai) — typically `~/.local/bin/devin` | `HELPER_AGENT="devin"` · leave `HELPER_MODEL` empty (Free rejects `--model`; Devin uses `~/.config/devin/config.json`) · `HELPER_PERMISSION="smart"` |
 | Claude Code | [Claude Code](https://code.claude.com/docs) on `PATH` as `claude` | `HELPER_AGENT="claude"` · optional `HELPER_MODEL` · optional `HELPER_EFFORT` (`--effort`) |
 | Codex | [Codex CLI](https://github.com/openai/codex) on `PATH` as `codex` | `HELPER_AGENT="codex"` · optional `HELPER_MODEL` · optional `HELPER_EFFORT` (`model_reasoning_effort`) |
@@ -168,9 +168,10 @@ trust card that highlights `No, exit` gets Down, then Enter only when the
 marker is on `Yes, I trust this folder`. An older card still gets one Enter.
 
 Seat language selects the CLI and model separately. "Cursor" uses `--kind
-cursor` with the live Cursor Sol default. Bare "Grok", "Grok Build", and
-"SuperGrok" use `--kind grok`. The Grok default is `grok-4.7-build-fast` at
-medium effort. "In Cursor with Grok" uses `--kind cursor`. "Fugu" uses
+cursor` with the live Cursor default. Bare "Grok", "Grok Build", and
+"SuperGrok" use `--kind grok`. The shipped Grok default is
+`grok-4.7-build-fast` at medium effort. Every default comes from the model
+policy; see [Model policy](#model-policy). "In Cursor with Grok" uses `--kind cursor`. "Fugu" uses
 `--kind codex` with the `codex-fugu` profile (`-p fugu`) and a model from
 the installed `fugu.json`. The default is regular `fugu` at high effort.
 Fugu Max, Ultra, and effort max are selected only when the user names them.
@@ -428,13 +429,33 @@ stays in draft. Early bot reviews do not replace final independent review.
 `herd-workflows.md` loads on each launch, even with a saved custom prompt.
 Reopen Lantern after an upgrade to load it.
 
+## Model policy
+
+Default models and model bans live in data, not code. Lantern ships
+`model-policy.json` at the plugin root and lays your own
+`model-policy.json` from the config directory over it:
+
+```bash
+$EDITOR "$(herdr plugin config-dir aigora.lantern)/model-policy.json"
+```
+
+The override can change each kind's default route, the spawn and helper
+defaults used when `helper.conf` leaves them empty, and a `forbid` list
+(fast routes, service tiers, model families) that the resolver, preflight,
+`bin/herdr` agent start, onboard, and the helper launch all enforce. A
+malformed override stops Lantern with a message rather than falling back.
+`bin/model-route policy` prints the effective policy and
+`bin/model-route policy-prompt` prints the section launch injects. Schema
+and merge rule: [docs/model-policy.md](docs/model-policy.md).
+
 ## Live model routes
 
 `bin/model-route` reads the installed catalogs and returns separate argv.
-`bin/model-preflight` checks the resolved route before a herd change.
+`bin/model-preflight` checks the resolved route before a herd change. The
+defaults below are the shipped policy; your override can change them.
 
 - Codex: `astra`, `gpt-6 astra`, and `astra high` select `gpt-6-astra`.
-  The default is live Astra at its catalog effort, currently medium, with
+  The shipped default is live Astra at its catalog effort, currently medium, with
   Fast off. The route sets `service_tier="default"` to override inherited
   priority settings. Efforts are low, medium, high, xhigh, max, and ultra. Bare
   `gpt-6` requires a choice. It never silently selects GPT-5.5.
