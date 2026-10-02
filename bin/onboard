@@ -4,10 +4,13 @@
 #
 #   onboard plan
 #   onboard show
-#   onboard apply --kind cursor --model "cursor grok 4.6 high fast"
+#   onboard apply --kind claude --model opus --effort high
 #   onboard apply --kind grok
 #   onboard apply --keep
 #   onboard doctor
+#
+# Default and forbidden models come from model-policy.json (see
+# docs/model-policy.md). apply refuses a model phrase the policy forbids.
 set -eu
 
 plugin_root=${HERDR_PLUGIN_ROOT:-$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)}
@@ -63,7 +66,47 @@ load_conf() {
     if [ -f "$conf" ]; then
         helper_parse_conf "$conf" || return 1
     fi
-    HELPER_SPAWN_KIND=${HELPER_SPAWN_KIND:-claude}
+    policy_loaded=1
+    policy_status=0
+    helper_policy_load "$plugin_root" || policy_status=$?
+    case $policy_status in
+    0) ;;
+    127)
+        policy_loaded=0
+        if helper_policy_override_present; then
+            printf '%s\n' "onboard: a model policy override exists but Python 3 is not available to read it" >&2
+            return 1
+        fi
+        ;;
+    *)
+        printf '%s\n' "onboard: the model policy does not load; run $plugin_root/bin/model-route policy" >&2
+        return 1
+        ;;
+    esac
+    helper_apply_policy_defaults
+}
+
+policy_refuses() {
+    # $1 kind, $2 model phrase. Prints the reason and succeeds when the
+    # model policy forbids the phrase.
+    [ "${policy_loaded:-0}" = 1 ] || return 1
+    [ -n "$2" ] || return 1
+    if _onboard_why=$("$plugin_root/bin/model-route" check-phrase "$1" "$2" 2>&1); then
+        return 1
+    fi
+    printf '%s' "$_onboard_why"
+    return 0
+}
+
+onboard_examples() {
+    # The spoken examples the policy allows, from the rendered mapping.
+    if [ "${policy_loaded:-0}" = 1 ]; then
+        "$plugin_root/bin/model-route" policy-prompt |
+            sed -n 's/^- Onboarding answers map to `[^`]*`: //p' |
+            sed 's/ → `[^`]*`\( with no `--model`\)\{0,1\}//g; s/; keep the current default.*$//; s/; /. /g'
+    else
+        printf '%s' 'Claude Opus high. Grok Build'
+    fi
 }
 
 cmd_plan() {
@@ -85,7 +128,7 @@ cmd_plan() {
         "spawn_model: ${HELPER_SPAWN_MODEL:-}" \
         "spawn_effort: ${HELPER_SPAWN_EFFORT:-}" \
         "spawn: $(helper_spawn_summary)"
-    printf '%s\n' "ask: What should I open when you just name a repo? Say the harness, model, and setting. Examples: Cursor Grok 4.6 high fast. Claude Opus high. Codex Astra high. Claude Fable high. Grok Build. Or: keep the current default."
+    printf '%s\n' "ask: What should I open when you just name a repo? Say the harness, model, and setting. Examples: $(onboard_examples). Or: keep the current default."
 }
 
 cmd_show() {
@@ -151,6 +194,10 @@ cmd_apply() {
     load_conf || exit 1
 
     if [ "$keep" = 1 ]; then
+        if why=$(policy_refuses "$HELPER_SPAWN_KIND" "${HELPER_SPAWN_MODEL:-}"); then
+            printf '%s\n' "onboard apply --keep: the current default breaks the model policy: $why" >&2
+            exit 2
+        fi
         helper_onboard_mark "$state_dir" || exit 1
         cmd_show
         return 0
@@ -168,6 +215,10 @@ cmd_apply() {
         ;;
     esac
     model=$(helper_normalize_spawn_model "$kind" "$model")
+    if why=$(policy_refuses "$kind" "$model"); then
+        printf '%s\n' "onboard apply: $why" >&2
+        exit 2
+    fi
 
     helper_conf_set_keys "$conf" \
         HELPER_SPAWN_KIND "$kind" \

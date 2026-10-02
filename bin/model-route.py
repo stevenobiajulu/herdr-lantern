@@ -13,6 +13,7 @@ import sys
 from dataclasses import dataclass
 
 from model_catalog import claude_model_catalog, listed_codex_models, model_words
+import model_policy
 
 
 EFFORT_ALIASES = {
@@ -43,6 +44,43 @@ class ParsedPhrase:
 
 def fail(message: str) -> None:
     raise RouteError(message)
+
+
+def policy() -> dict:
+    try:
+        return model_policy.load()
+    except model_policy.PolicyError as error:
+        fail(str(error))
+
+
+def default_phrase(kind: str) -> str:
+    try:
+        value = model_policy.route_default(policy(), kind)
+    except model_policy.PolicyError as error:
+        fail(str(error))
+    phrase = " ".join(str(part) for part in (value.get("model"), value.get("effort")) if part)
+    if not phrase:
+        fail(f"model policy routes.{kind}.default names no model")
+    return phrase
+
+
+def enforce(route: dict[str, object]) -> dict[str, object]:
+    """Every resolved route passes the forbid list, default or spoken."""
+    try:
+        model_policy.check_route(policy(), route)
+    except model_policy.PolicyError as error:
+        fail(str(error))
+    return route
+
+
+def allowed(model_id: str) -> bool:
+    return model_policy.forbidden_model(policy(), model_id) is None
+
+
+def refuse_phrase(phrase: str) -> None:
+    why = model_policy.forbidden_phrase(policy(), phrase)
+    if why:
+        fail(why)
 
 
 def run_catalog(command: list[str], *, input_text: str | None = None) -> str:
@@ -126,7 +164,8 @@ def choose(candidates: list[tuple[str, set[str]]], terms: tuple[str, ...]) -> st
 
 def codex_route(phrase: str) -> dict[str, object]:
     if phrase.strip().lower() == "default":
-        phrase = "astra"
+        phrase = default_phrase("codex")
+    refuse_phrase(phrase)
     parsed = parse_phrase(phrase, keep_effort=False)
     if set(parsed.terms) <= {"gpt", "codex", "6"} and "6" in parsed.terms:
         fail("model phrase is ambiguous: name astra, sol, or luna")
@@ -168,19 +207,20 @@ def codex_route(phrase: str) -> dict[str, object]:
         argv.extend(["-c", f'model_reasoning_effort="{effort}"'])
     # Override a user or profile Fast setting on normal routes too.
     argv.extend(["-c", f'service_tier="{service_tier}"'])
-    return {
+    return enforce({
         "kind": "codex",
         "model": model_id,
         "effort": effort,
         "fast": parsed.fast,
         "service_tier": service_tier,
         "argv": argv,
-    }
+    })
 
 
 def claude_route(phrase: str) -> dict[str, object]:
     if phrase.strip().lower() == "default":
-        phrase = "opus high"
+        phrase = default_phrase("claude")
+    refuse_phrase(phrase)
     parsed = parse_phrase(phrase, keep_effort=False)
     try:
         catalog = claude_model_catalog(run_catalog)
@@ -195,7 +235,7 @@ def claude_route(phrase: str) -> dict[str, object]:
     argv = ["--model", model_id]
     if parsed.effort:
         argv.extend(["--effort", parsed.effort])
-    return {"kind": "claude", "model": model_id, "effort": parsed.effort, "fast": False, "argv": argv}
+    return enforce({"kind": "claude", "model": model_id, "effort": parsed.effort, "fast": False, "argv": argv})
 
 
 def cursor_catalog() -> list[tuple[str, set[str]]]:
@@ -208,30 +248,41 @@ def cursor_catalog() -> list[tuple[str, set[str]]]:
 
 
 def cursor_route(phrase: str) -> dict[str, object]:
+    if phrase.strip().lower() != "default":
+        refuse_phrase(phrase)
     rows = cursor_catalog()
     if phrase.strip().lower() == "default":
+        try:
+            rule = model_policy.route_default(policy(), "cursor")
+        except model_policy.PolicyError as error:
+            fail(str(error))
         names = [name for name, _ in rows]
-        for preferred in ("gpt-5.6-sol-high-fast",):
-            if preferred in names:
-                model_id = preferred
-                break
-        else:
+        model_id = next(
+            (name for name in rule.get("prefer", []) if name in names and allowed(name)),
+            None,
+        )
+        if model_id is None:
+            fallback = rule.get("fallback", {})
+            required = set(fallback.get("require", []))
+            excluded = set(fallback.get("exclude", []))
             eligible = [
                 name
                 for name, tokens in rows
-                if "high" in tokens
-                and "fast" in tokens
-                and "composer" not in tokens
-                and "grok" not in tokens
-                and name != "auto"
+                if required <= tokens
+                and not (excluded & tokens)
+                and name not in excluded
+                and allowed(name)
             ]
             if not eligible:
-                fail("Cursor catalog has no high and fast default")
+                fail("Cursor catalog has no default allowed by the model policy "
+                     f"(needs {', '.join(sorted(required)) or 'any'})")
             model_id = eligible[0]
-        return {"kind": "cursor", "model": model_id, "effort": "high", "fast": True, "argv": ["--model", model_id]}
+        effort = rule.get("effort") or None
+        fast = "fast" in candidate_tokens(model_id)
+        return enforce({"kind": "cursor", "model": model_id, "effort": effort, "fast": fast, "argv": ["--model", model_id]})
     parsed = parse_phrase(phrase, keep_effort=True)
     model_id = choose(rows, parsed.terms)
-    return {"kind": "cursor", "model": model_id, "effort": parsed.effort, "fast": parsed.fast, "argv": ["--model", model_id]}
+    return enforce({"kind": "cursor", "model": model_id, "effort": parsed.effort, "fast": parsed.fast, "argv": ["--model", model_id]})
 
 
 def grok_catalog() -> list[tuple[str, set[str]]]:
@@ -244,28 +295,26 @@ def grok_catalog() -> list[tuple[str, set[str]]]:
 
 
 def grok_route(phrase: str) -> dict[str, object]:
+    if phrase.strip().lower() != "default":
+        refuse_phrase(phrase)
     rows = grok_catalog()
     if phrase.strip().lower() == "default":
+        try:
+            rule = model_policy.route_default(policy(), "grok")
+        except model_policy.PolicyError as error:
+            fail(str(error))
         names = [name for name, _ in rows]
-        preferred = (
-            ("grok-4.7-build-fast", "medium"),
-            ("grok-4.7", "high"),
-            ("grok-4.7-high-fast", "high"),
-            ("grok-4.7-fast", "high"),
-            ("grok-4.6-high-fast", "high"),
-            ("grok-4.6-fast", "high"),
-            ("grok-4.6", "high"),
-            ("grok-4.5-high-fast", "high"),
-            ("grok-4.5-fast", "high"),
-            ("grok-4.5", "high"),
+        preferred = [(str(item[0]), str(item[1])) for item in rule.get("prefer", [])]
+        choice = next(
+            ((name, effort) for name, effort in preferred if name in names and allowed(name)),
+            None,
         )
-        choice = next(((name, effort) for name, effort in preferred if name in names), None)
         if choice is None:
-            fail("Grok catalog has no approved default")
+            fail("Grok catalog has no default allowed by the model policy")
         model_id, effort = choice
         fast = "fast" in candidate_tokens(model_id)
         argv = ["-m", model_id, "--reasoning-effort", effort]
-        return {"kind": "grok", "model": model_id, "effort": effort, "fast": fast, "argv": argv}
+        return enforce({"kind": "grok", "model": model_id, "effort": effort, "fast": fast, "argv": argv})
     parsed = parse_phrase(phrase, keep_effort=False)
     model_id = choose(rows, parsed.terms)
     if parsed.fast and "fast" not in candidate_tokens(model_id):
@@ -273,7 +322,7 @@ def grok_route(phrase: str) -> dict[str, object]:
     argv = ["-m", model_id]
     if parsed.effort:
         argv.extend(["--reasoning-effort", parsed.effort])
-    return {"kind": "grok", "model": model_id, "effort": parsed.effort, "fast": parsed.fast, "argv": argv}
+    return enforce({"kind": "grok", "model": model_id, "effort": parsed.effort, "fast": parsed.fast, "argv": argv})
 
 
 def fugu_catalog_path() -> str:
@@ -339,13 +388,13 @@ def fugu_effort(model: dict[str, object], requested: str | None) -> str:
 
 def fugu_result(model: dict[str, object], effort: str) -> dict[str, object]:
     slug = str(model.get("slug"))
-    return {
+    return enforce({
         "kind": "fugu",
         "model": slug,
         "effort": effort,
         "fast": False,
         "argv": ["-p", "fugu", "-m", slug, "-c", f'model_reasoning_effort="{effort}"'],
-    }
+    })
 
 
 def fugu_route(phrase: str) -> dict[str, object]:
@@ -410,9 +459,20 @@ def fugu_route(phrase: str) -> dict[str, object]:
     return fugu_result(model, fugu_effort(model, effort))
 
 
+USAGE = (
+    "usage: model-route <codex|claude|cursor|grok|fugu> <spoken model phrase|default>\n"
+    "       model-route policy | policy-prompt | policy-shell\n"
+    "       model-route check-phrase <kind> <phrase>\n"
+    "       model-route check-argv <kind> -- <agent argv...>"
+)
+
+
 def main() -> int:
+    if len(sys.argv) >= 2 and sys.argv[1] in {"policy", "policy-prompt", "policy-shell", "check-phrase", "check-argv"}:
+        command = {"policy-prompt": "prompt", "policy-shell": "shell"}.get(sys.argv[1], sys.argv[1])
+        return model_policy.main([command, *sys.argv[2:]])
     if len(sys.argv) < 3 or sys.argv[1] not in {"codex", "claude", "cursor", "grok", "fugu"}:
-        print("usage: model-route <codex|claude|cursor|grok|fugu> <spoken model phrase|default>", file=sys.stderr)
+        print(USAGE, file=sys.stderr)
         return 2
     phrase = " ".join(sys.argv[2:]).strip()
     try:

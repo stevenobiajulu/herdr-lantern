@@ -13,6 +13,7 @@ import sys
 from dataclasses import dataclass
 
 from model_catalog import claude_model_catalog, listed_codex_models, model_words
+import model_policy
 
 
 class CheckError(RuntimeError):
@@ -241,7 +242,20 @@ def report_available(kind: str, model: str, effort: str) -> int:
     return 0
 
 
+def load_policy() -> dict:
+    try:
+        return model_policy.load()
+    except model_policy.PolicyError as error:
+        fail(f"availability check failed: {error}")
+
+
 def report_unavailable(kind: str, model: str, reason: str, substitute: dict[str, object] | None) -> int:
+    # Never propose a substitute the model policy would refuse to launch.
+    if substitute is not None:
+        try:
+            model_policy.check_route(load_policy(), substitute)
+        except model_policy.PolicyError:
+            substitute = None
     payload = {"available": False, "kind": kind, "model": model, "reason": reason, "substitute": substitute}
     print(json.dumps(payload, separators=(",", ":")))
     return 3
@@ -272,6 +286,9 @@ def fugu_models() -> dict[str, set[str]]:
 
 
 def check(kind: str, model: str, effort: str) -> int:
+    why = model_policy.forbidden_model(load_policy(), model)
+    if why:
+        fail(f"refused before availability check: {why}")
     if kind == "fugu":
         models = fugu_models()
         if model not in models:

@@ -180,7 +180,7 @@ helper_conf_set_keys() {
 
 helper_spawn_summary() {
     # Prints the user’s spawn default from the current shell vars.
-    _helper_ss_kind=${HELPER_SPAWN_KIND:-claude}
+    _helper_ss_kind=${HELPER_SPAWN_KIND:-${HELPER_POLICY_SPAWN_KIND:-claude}}
     _helper_ss_model=${HELPER_SPAWN_MODEL:-}
     _helper_ss_effort=${HELPER_SPAWN_EFFORT:-}
     if [ -n "$_helper_ss_model" ] && [ -n "$_helper_ss_effort" ]; then
@@ -326,10 +326,104 @@ helper_detect_agent() {
 }
 
 helper_cursor_default_model() {
-    # The one model default the plugin owns: Cursor agent with an empty
-    # HELPER_MODEL. launch.sh builds the argv from this and the chat
-    # identity names it, so it lives here once.
-    printf 'grok-4.7-high-fast'
+    # Cursor agent with an empty HELPER_MODEL. The value lives in
+    # model-policy.json (routes.cursor.helper_model); helper_policy_load
+    # sets it. launch.sh builds the argv from this and the chat identity
+    # names it, so both read it here. The literal is the shipped value,
+    # used only when the policy was not loaded (no Python 3 on PATH).
+    printf '%s' "${HELPER_POLICY_CURSOR_HELPER_MODEL:-grok-4.7-high-fast}"
+}
+
+helper_policy_load() {
+    # $1 plugin root. Sets HELPER_POLICY_* from the effective model policy
+    # (shipped model-policy.json plus the user override). Returns 0 when
+    # loaded, 127 when there is no Python 3 (callers keep the shipped
+    # literals), and 2 when the policy itself is broken: a malformed
+    # override must stop the caller, never fall back in silence.
+    _helper_pl_root=$1
+    helper_detect_python >/dev/null 2>&1 || return 127
+    _helper_pl_out=$("$_helper_pl_root/bin/model-route" policy-shell) || return 2
+    _helper_pl_nl='
+'
+    while [ -n "$_helper_pl_out" ]; do
+        case $_helper_pl_out in
+        *"$_helper_pl_nl"*)
+            _helper_pl_line=${_helper_pl_out%%"$_helper_pl_nl"*}
+            _helper_pl_out=${_helper_pl_out#*"$_helper_pl_nl"}
+            ;;
+        *)
+            _helper_pl_line=$_helper_pl_out
+            _helper_pl_out=
+            ;;
+        esac
+        _helper_pl_line=$(printf '%s' "$_helper_pl_line" | tr -d '\r')
+        _helper_pl_key=${_helper_pl_line%%=*}
+        _helper_pl_val=${_helper_pl_line#*=}
+        helper_conf_value_ok "$_helper_pl_val" || return 2
+        case $_helper_pl_key in
+        HELPER_POLICY_SPAWN_KIND) HELPER_POLICY_SPAWN_KIND=$_helper_pl_val ;;
+        HELPER_POLICY_SPAWN_MODEL) HELPER_POLICY_SPAWN_MODEL=$_helper_pl_val ;;
+        HELPER_POLICY_SPAWN_EFFORT) HELPER_POLICY_SPAWN_EFFORT=$_helper_pl_val ;;
+        HELPER_POLICY_AGENT) HELPER_POLICY_AGENT=$_helper_pl_val ;;
+        HELPER_POLICY_MODEL) HELPER_POLICY_MODEL=$_helper_pl_val ;;
+        HELPER_POLICY_EFFORT) HELPER_POLICY_EFFORT=$_helper_pl_val ;;
+        HELPER_POLICY_CURSOR_HELPER_MODEL) HELPER_POLICY_CURSOR_HELPER_MODEL=$_helper_pl_val ;;
+        '') ;;
+        *) return 2 ;;
+        esac
+    done
+    return 0
+}
+
+helper_apply_policy_defaults() {
+    # Fill empty helper.conf values from the loaded policy. The spawn
+    # default moves as one unit: a stored kind keeps its own model and
+    # effort, so a policy model for another kind never leaks into it.
+    # The helper model and effort apply only to the policy's own agent.
+    if [ -z "${HELPER_SPAWN_KIND:-}" ]; then
+        HELPER_SPAWN_KIND=${HELPER_POLICY_SPAWN_KIND:-claude}
+        [ -n "${HELPER_SPAWN_MODEL:-}" ] || HELPER_SPAWN_MODEL=${HELPER_POLICY_SPAWN_MODEL:-}
+        [ -n "${HELPER_SPAWN_EFFORT:-}" ] || HELPER_SPAWN_EFFORT=${HELPER_POLICY_SPAWN_EFFORT:-}
+    fi
+    if [ -z "${HELPER_AGENT:-}" ] && [ -n "${HELPER_POLICY_AGENT:-}" ]; then
+        HELPER_AGENT=$HELPER_POLICY_AGENT
+    fi
+    if [ -n "${HELPER_POLICY_AGENT:-}" ] && [ "${HELPER_AGENT:-}" = "$HELPER_POLICY_AGENT" ]; then
+        [ -n "${HELPER_MODEL:-}" ] || HELPER_MODEL=${HELPER_POLICY_MODEL:-}
+        [ -n "${HELPER_EFFORT:-}" ] || HELPER_EFFORT=${HELPER_POLICY_EFFORT:-}
+    fi
+}
+
+helper_policy_override_present() {
+    [ -n "${HERDR_PLUGIN_CONFIG_DIR:-}" ] &&
+        [ -f "$(helper_posix_path "$HERDR_PLUGIN_CONFIG_DIR")/model-policy.json" ]
+}
+
+helper_policy_check_start() {
+    # $1 plugin root, then the herdr argv. Blocks an agent start whose
+    # agent argv (after --) names a model or service tier the model policy
+    # forbids. Without Python 3 the policy cannot be read: block when a
+    # user override exists (fail closed for a user who set a policy),
+    # otherwise allow, because the shipped policy forbids nothing.
+    _helper_pc_root=$1
+    shift
+    _helper_pc_kind=$(helper_argv_option_value --kind "$@") || _helper_pc_kind=
+    while [ $# -gt 0 ] && [ "$1" != -- ]; do
+        shift
+    done
+    [ $# -gt 0 ] && shift
+    if ! helper_detect_python >/dev/null 2>&1; then
+        if helper_policy_override_present; then
+            printf '%s\n' 'lantern: blocked agent start: a model policy override exists and Python 3 is not available to check it' >&2
+            return 2
+        fi
+        return 0
+    fi
+    "$_helper_pc_root/bin/model-route" check-argv "${_helper_pc_kind:-unknown}" -- "$@" || {
+        printf '%s\n' 'lantern: blocked agent start by the model policy (see model-policy.json)' >&2
+        return 2
+    }
+    return 0
 }
 
 helper_chat_identity() {

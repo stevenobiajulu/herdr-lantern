@@ -26,6 +26,8 @@ case ${HERDR_HELPER_OK:-} in
         exit $?
     fi
     if helper_is_agent_start "$@"; then
+        # The model policy (model-policy.json) gates what a seat may run.
+        helper_policy_check_start "$self_dir/.." "$@" || exit 2
         helper_relay_agent_start "$real" "$@"
         exit $?
     fi

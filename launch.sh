@@ -75,6 +75,22 @@ HELPER_PERMISSION=""
 HELPER_EXTRA_ARGS=""
 helper_parse_conf "$conf" || die "could not parse $conf"
 
+# Model defaults and bans live in model-policy.json (shipped) plus the user
+# override in the config directory. Empty helper.conf values fall back to
+# it. A broken override stops here rather than launching on a guess.
+model_policy_note=
+helper_policy_load "$plugin_root"
+case $? in
+0) ;;
+127)
+    model_policy_note="- Model policy unavailable: no Python 3, so model-route cannot read model-policy.json. Do not seat agents until Python 3 works."
+    helper_policy_override_present &&
+        die "a model policy override exists but Python 3 is not available to read it"
+    ;;
+*) die "the model policy does not load; run $plugin_root/bin/model-route policy to see why" ;;
+esac
+helper_apply_policy_defaults
+
 if [ -z "$HELPER_AGENT" ]; then
     HELPER_AGENT=$(helper_detect_agent) ||
         die "set HELPER_AGENT in $conf (agent, devin, claude, codex, grok, or pi)"
@@ -94,7 +110,7 @@ fi
 command -v "$helper_bin" >/dev/null 2>&1 ||
     die "agent program not found on PATH: $helper_bin"
 
-HELPER_SPAWN_KIND=$(helper_normalize_spawn_kind "${HELPER_SPAWN_KIND:-claude}")
+HELPER_SPAWN_KIND=$(helper_normalize_spawn_kind "${HELPER_SPAWN_KIND:-${HELPER_POLICY_SPAWN_KIND:-claude}}")
 case $HELPER_SPAWN_KIND in
 *[!a-z0-9_-]* | '')
     die "HELPER_SPAWN_KIND must match [a-z][a-z0-9_-]* (got '$HELPER_SPAWN_KIND')"
@@ -112,6 +128,18 @@ mkdir -p "$state_dir" || die "could not create $state_dir"
 onboard_needed=$(helper_onboard_needed "$state_dir") ||
     die "could not check first-run state"
 spawn_summary=$(helper_spawn_summary)
+spawn_policy_note=
+if [ -z "$model_policy_note" ] && [ -n "$HELPER_SPAWN_MODEL" ] &&
+    ! spawn_policy_why=$("$plugin_root/bin/model-route" check-phrase \
+        "$HELPER_SPAWN_KIND" "$HELPER_SPAWN_MODEL" 2>&1); then
+    spawn_policy_note="- The stored spawn default breaks the model policy ($spawn_policy_why). Do not seat it. Ask the user for a new default and store it with \`onboard apply\`."
+fi
+if [ -n "$model_policy_note" ]; then
+    model_policy_section=$model_policy_note
+else
+    model_policy_section=$("$plugin_root/bin/model-route" policy-prompt) ||
+        die "could not render the model policy"
+fi
 onboard_note=
 if [ "$onboard_needed" = 1 ]; then
     onboard_note=$(
@@ -119,13 +147,8 @@ if [ "$onboard_needed" = 1 ]; then
 - First-run setup is needed. After the field snapshot, ask once what to
   open when they just name a repo: harness, model, and setting. Map the
   answer exactly, then run `$HERDR_PLUGIN_ROOT/bin/onboard apply` with
-  that mapping: Cursor Grok 4.7 high fast → `--kind cursor --model
-  "grok 4.7 high fast"`; Cursor Grok 4.6 high fast → `--kind cursor
-  --model "cursor grok 4.6 high fast"`; Claude Opus high → `--kind claude
-  --model opus --effort high`; Codex Astra high → `--kind
-  codex --model "astra high"`; Grok Build → `--kind grok` with
-  no `--model`; keep the current default → `onboard apply --keep`.
-  Confirm the stored summary. Until they answer, do not invent a spawn
+  the onboarding mapping in the Model policy section below. Offer only
+  answers that mapping lists. Confirm the stored summary. Until they answer, do not invent a spawn
   default beyond the injected kind. Do not seat an agent as part of setup.
 EOF
     )
@@ -295,28 +318,29 @@ $session_capture_note
   same mapping as first-run (Grok Build is \`--kind grok\` with no
   \`--model\`). Show the stored summary with \`onboard show\`.
 $onboard_note
+$model_policy_section
+$spawn_policy_note
 - Seat agents in the smart-auto permission tier, except Codex, which is
-  unattended. Claude defaults to the argv from \`model-route claude
-  default\`, then \`--permission-mode auto\`. Pass that resolved id. Do not
-  replace it with the bare help alias opus. Cursor uses the live
-  \`model-route cursor default\` result with \`--auto-review --trust\`. It
-  prefers \`gpt-5.6-sol-high-fast\` and excludes Grok and Composer from its
-  default fallback. Bare Grok is \`--kind grok\` with \`model-route grok
+  unattended. Every default model comes from the Model policy section
+  above: pass the argv that \`model-route <kind> default\` returns. Do not
+  replace a resolved id with a bare help alias such as opus. Claude seats
+  add \`--permission-mode auto\`. Cursor seats use the live
+  \`model-route cursor default\` result with \`--auto-review --trust\`.
+  Bare Grok is \`--kind grok\` with \`model-route grok
   default\`. Do not use \`--kind cursor\` for the word Grok. "Cursor" or
   "in Cursor with Grok" selects the Cursor CLI. A requested Cursor Grok
   4.7 id is \`grok-4.7-high-fast\`. A requested Grok 4.6 id remains
   \`cursor-grok-4.6-high-fast\`. Do not invent \`cursor-grok-4.7\`. Grok
   Build uses the live \`model-route grok default\` result with
-  \`--permission-mode auto\`. It prefers \`grok-4.7-build-fast\` at medium
-  effort, then \`grok-4.7\` at high effort, then \`grok-4.6\`, then
-  \`grok-4.5\`. Codex interactive and review
-  use \`model-route codex default\`: live Astra, catalog default effort
-  (currently medium), Fast off with the explicit normal service tier. Pass
+  \`--permission-mode auto\`. Codex interactive and review
+  use \`model-route codex default\`, Fast off with the explicit normal
+  service tier. Pass
   \`--dangerously-bypass-approvals-and-sandbox\` on every start, resume,
   fork, and review. Do not seat Codex with only \`-a never -s danger-full-access\`;
   the TUI can still ask. The herdr wrapper puts the Codex flag immediately
-  after \`--\` and moves a copy that sat after resume or review.
-  \`astra\`, \`gpt-6 astra\`, and \`astra high\` resolve through
+  after \`--\` and moves a copy that sat after resume or review. It also
+  blocks a start whose argv names a model or service tier the Model
+  policy forbids. A spoken Codex phrase such as \`astra high\` resolves through
   \`\$HERDR_PLUGIN_ROOT/bin/model-route codex "<phrase>"\` to get
   separate Codex argv. Use the same resolver with claude, cursor, or grok for a user
   supplied model phrase. Never invent a model slug. A kind not named here
@@ -385,7 +409,7 @@ $onboard_note
   \`-r <id>\`, Cursor \`--continue\` or \`--resume <id>\`, Grok
   \`--continue\` or \`--resume <id>\`, Gemini \`--resume latest\`, OpenCode
   \`--continue\`, Devin \`--continue\`, and Pi \`--continue\` or \`--session <id>\`.
-- "Cursor" means \`--kind cursor\` with the live Sol default. "Grok" means \`--kind grok\` with the live Grok Build default. "Grok Build" and
+- "Cursor" means \`--kind cursor\` with the live Cursor default. "Grok" means \`--kind grok\` with the live Grok Build default. "Grok Build" and
   "SuperGrok" use that same Grok route. "In Cursor with Grok" means
   \`--kind cursor\` with a live Cursor Grok model.
 - Route "open a review" and "review this" to the real Codex \`review\`
@@ -511,18 +535,16 @@ $onboard_note
   \`fugu-ultra-v1.0\`. A review prompt ranks areas, excludes known
   findings, and requires an ordered P0-P3 report. Run \`codex-fugu
   --check\` when the catalog is stale. Do not invent a slug.
-- Live models: Astra supports low, medium, high, xhigh, max, ultra. Codex
-  also lists gpt-6-sol and gpt-6-luna. Bare gpt-6 is ambiguous: ask for
-  Astra, Sol, or Luna. Bare sol and bare luna are ambiguous between
-  generation 6 and 5.6. Never silently pick GPT-5.6 or GPT-5.5. There is
-  no gpt-6-terra. Cursor lists Codex 5.3 as gpt-5.3-codex and has no GPT-6
-  id. Fast is off unless requested
-  and the live catalog publishes one Fast tier ID. Cursor Fable 5.1 IDs come
-  from agent --list-models. No Cursor Astra ID was listed on 2026-09-05.
-  Claude fable and claude-fable-5-1 resolve to Fable 5.1 through the live
-  initialization catalog. Pin its resolvedModel and supportedEffortLevels.
-  The old claude-fable-5 help example is not a model allowlist. The resolver
-  sends only an SDK initialize request, with no model prompt or saved session.
+- Live models: the resolver reads each installed catalog; this appendix
+  does not list them. Bare gpt-6 is ambiguous: ask for Astra, Sol, or
+  Luna. Bare sol and bare luna are ambiguous between generations. Never
+  silently pick an older generation. Fast is off unless requested, the
+  live catalog publishes one Fast tier ID, and the Model policy allows it.
+  Cursor IDs come from agent --list-models. Claude aliases such as fable
+  and opus resolve through the live initialization catalog. Pin its
+  resolvedModel and supportedEffortLevels. The claude --help examples are
+  not a model allowlist. The resolver sends only an SDK initialize
+  request, with no model prompt or saved session.
 
 $herd_workflows
 EOF
@@ -589,6 +611,15 @@ mkdir -p "$workdir/.cursor/rules" || die "could not create cursor rules dir"
 
 if [ "$helper_bin" = "agent" ] && [ -z "$HELPER_MODEL" ]; then
     HELPER_MODEL=$(helper_cursor_default_model)
+fi
+# The chat itself obeys the model policy too.
+if [ -z "$model_policy_note" ]; then
+    set -f
+    # shellcheck disable=SC2086
+    helper_policy_why=$("$plugin_root/bin/model-route" check-argv "$HELPER_AGENT" -- \
+        ${HELPER_MODEL:+--model "$HELPER_MODEL"} $HELPER_EXTRA_ARGS 2>&1) ||
+        die "helper.conf breaks the model policy: $helper_policy_why"
+    set +f
 fi
 
 set -- "$helper_bin"
